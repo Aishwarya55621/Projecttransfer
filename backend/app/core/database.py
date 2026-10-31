@@ -1,6 +1,6 @@
 """
 SQLAlchemy async engine and session factory configured for PostgreSQL (Neon-ready).
-Explicit error reporting when PostgreSQL is unavailable (no silent SQLite fallback).
+Falls back to local SQLite database when PostgreSQL is unavailable.
 """
 
 import logging
@@ -11,6 +11,8 @@ from app.core.config import settings
 
 logger = logging.getLogger("database")
 
+SQLITE_FALLBACK_URL = "sqlite+aiosqlite:///./supplier360.db"
+
 
 class Base(DeclarativeBase):
     """Base class for all ORM models."""
@@ -19,27 +21,35 @@ class Base(DeclarativeBase):
 
 def _create_engine_for_url(db_url: str):
     connect_args = {}
+    is_sqlite = "sqlite" in db_url
+
     if "asyncpg" in db_url:
         connect_args["timeout"] = 10.0
         if "neon.tech" in db_url or "ssl=require" in db_url or "sslmode=require" in db_url:
             connect_args["ssl"] = "require"
 
-    # Remove query string if asyncpg ssl was set via connect_args to avoid duplicate/conflicting param
+    if is_sqlite:
+        connect_args["check_same_thread"] = False
+
+    # Remove query string params asyncpg doesn't understand (ssl*, channel_binding)
     clean_url = db_url
     if "?" in clean_url and "asyncpg" in clean_url:
         base_part, query_part = clean_url.split("?", 1)
-        # Keep non-ssl query params if any
-        params = [p for p in query_part.split("&") if not p.startswith("ssl")]
+        # Keep only params that asyncpg actually supports
+        params = [p for p in query_part.split("&") if not p.startswith("ssl") and not p.startswith("channel_binding")]
         clean_url = f"{base_part}?{'&'.join(params)}" if params else base_part
 
-    return create_async_engine(
-        clean_url,
+    kwargs = dict(
         echo=settings.DEBUG,
-        pool_pre_ping=True,
-        pool_size=10,
-        max_overflow=20,
         connect_args=connect_args,
     )
+    # SQLite doesn't support pool_size / max_overflow
+    if not is_sqlite:
+        kwargs["pool_pre_ping"] = True
+        kwargs["pool_size"] = 10
+        kwargs["max_overflow"] = 20
+
+    return create_async_engine(clean_url, **kwargs)
 
 
 _current_url = settings.async_database_url
@@ -48,8 +58,8 @@ async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_o
 
 
 async def ensure_active_engine():
-    """Verify database connection; raise explicit informative error if PostgreSQL is unreachable."""
-    global engine, async_session_factory
+    """Verify database connection; fall back to SQLite if PostgreSQL is unreachable."""
+    global engine, async_session_factory, _current_url
 
     try:
         async with engine.connect() as conn:
@@ -57,14 +67,14 @@ async def ensure_active_engine():
         return engine
     except Exception as e:
         safe_url = _current_url.split("@")[-1] if "@" in _current_url else _current_url
-        error_msg = (
-            f"\n[DATABASE ERROR] Unable to connect to PostgreSQL at host '{safe_url}'.\n"
-            f"Details: {str(e)}\n"
-            f"Please verify your DATABASE_URL in backend/.env is pointing to an active Neon PostgreSQL instance.\n"
-            f"Note: Silent fallback to SQLite is disabled to prevent data drift.\n"
+        logger.warning(
+            f"[DATABASE] PostgreSQL unreachable at '{safe_url}': {e}. "
+            f"Falling back to local SQLite database (supplier360.db)."
         )
-        logger.error(error_msg)
-        raise ConnectionError(error_msg) from e
+        _current_url = SQLITE_FALLBACK_URL
+        engine = _create_engine_for_url(SQLITE_FALLBACK_URL)
+        async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        return engine
 
 
 async def get_db() -> AsyncSession:

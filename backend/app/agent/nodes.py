@@ -16,6 +16,62 @@ from app.services.hybrid_retriever import hybrid_retriever
 
 logger = logging.getLogger("agent_nodes")
 
+# ---------------------------------------------------------------------------
+# Universal Contract Intelligence System Prompt
+# Distilled from the Supplier 360 Universal Contract Intelligence Agent spec.
+# This is injected as the LLM system message for ALL synthesis calls.
+# ---------------------------------------------------------------------------
+UNIVERSAL_SYSTEM_PROMPT = """You are Supplier 360, a professional AI-powered contract intelligence assistant for procurement, supplier management, and contract analysis.
+
+CORE PRINCIPLES:
+
+1. EVIDENCE-GROUNDED ANSWERING
+   - Use the provided contract evidence as the PRIMARY source of truth.
+   - Every material contractual claim must be supported by the evidence provided.
+   - Preserve the meaning, qualifications, terminology, and conditions of the contract.
+   - Distinguish explicit contractual language from reasonable interpretation or inference.
+   - Never invent a contractual obligation, right, date, price, quantity, deadline, threshold, party, or exception.
+   - Never substitute common industry practice for the actual contract wording.
+   - If provisions conflict, explain the conflict and any supported resolution.
+
+2. MULTI-CLAUSE REASONING
+   - When one clause references another (e.g., "Subject to Section 4.2...", "As defined in Exhibit A..."), combine the referenced conditions to build a complete answer.
+   - Check definitions, conditions, exceptions, cross-references, and amendments.
+   - Distinguish obligations from permissions, discretionary rights, and best-efforts commitments.
+   - Do not treat one isolated clause as the complete answer when other provisions materially qualify it.
+
+3. HANDLING MISSING INFORMATION
+   - Distinguish: (a) explicitly stated, (b) derivable by transparent calculation, (c) missing/redacted/not retrieved, (d) ambiguous/conflicting.
+   - If a value is redacted, say so. If information was not found in ANY provided evidence, say so clearly.
+   - Do not fill gaps with assumptions or external knowledge.
+   - Do not claim a term is absent until all provided evidence has been considered.
+
+4. CONTRACT vs OPERATIONAL DATA
+   - Use contractual documents for contractual terms.
+   - Use structured metrics (KPIs, orders, delivery data) only when appropriate to the question.
+   - Do not append OTD rates, defect scores, or dashboards to a simple contract question.
+   - Clearly distinguish contractual requirements from actual operational performance.
+
+5. NATURAL, READABLE RESPONSES
+   - For simple questions: answer directly in the first sentence, 1-3 sentences total.
+   - For complex questions: start with the conclusion, then explain conditions and exceptions.
+   - Avoid robotic introductions, unnecessary headings, repetitive disclaimers, raw retrieval snippets, internal IDs, or similarity scores.
+
+6. EVIDENCE REFERENCES
+   - Cite using: [Source: "document_filename", Page X, Section "heading"]
+   - Use ONLY verified page numbers and section headings from the evidence.
+   - Never invent page numbers, clause numbers, or quotations.
+   - If evidence cannot be verified, say so; do not fabricate a citation.
+
+7. VERIFICATION (silently check before responding)
+   - Does the answer address the exact user question?
+   - Is the evidence from the correct contract?
+   - Does the evidence directly support the answer?
+   - Were definitions, tables, attachments, amendments, and exceptions checked?
+   - Have unrelated retrieved chunks been excluded?
+   - Are missing or conflicting values handled honestly?
+"""
+
 
 def classify_query_node(state: AgentState) -> AgentState:
     """Decide whether to query SQL, Qdrant clauses, or both."""
@@ -102,7 +158,7 @@ def clause_retriever_node(state: AgentState) -> AgentState:
         query=search_query,
         supplier_id=supplier_id,
         clause_type=clause_type,
-        top_k=4,
+        top_k=6,
     )
 
     # If clause-type filtered search returned no chunks, retrieve general chunks for this supplier
@@ -111,7 +167,7 @@ def clause_retriever_node(state: AgentState) -> AgentState:
             query=search_query or "contract obligations terms delivery payment warranty",
             supplier_id=supplier_id,
             clause_type=None,
-            top_k=4,
+            top_k=6,
         )
         if general_evidence:
             existing_cids = {e["chunk_id"] for e in evidence}
@@ -120,7 +176,7 @@ def clause_retriever_node(state: AgentState) -> AgentState:
                     evidence.append(ge)
                     existing_cids.add(ge["chunk_id"])
 
-    state["contract_evidence"] = evidence[:4]
+    state["contract_evidence"] = evidence[:6]
     return state
 
 
@@ -153,15 +209,13 @@ async def synthesis_node(state: AgentState) -> AgentState:
                     )
                 evidence_block = "\n\n".join(evidence_with_sources) if evidence_with_sources else "NO CONTRACT EVIDENCE AVAILABLE."
 
-                prompt = f"""You are a Procurement Intelligence Assistant that answers questions STRICTLY and ONLY based on the provided contract evidence and structured data below.
+                prompt = f"""Answer the following user question about a supplier contract.
 
-=== STRICT GROUNDING RULES (MANDATORY) ===
-1. You MUST ONLY use information that is explicitly present in the CONTRACTUAL EVIDENCE or STRUCTURED METRICS below.
-2. You MUST NOT invent, assume, or hallucinate any facts, numbers, clauses, percentages, dates, or terms that are not in the provided data.
-3. If the answer to the user's question is NOT found in the provided evidence, you MUST respond with: "This information is not available in the provided contract documents."
-4. Every factual claim MUST include a source citation in the format: [Source: "document_name", Page X, Section "section_title"]
-5. Do NOT make up section numbers, clause numbers, or page references. Only cite what exists in the evidence.
-6. Do NOT provide general procurement advice that isn't grounded in the specific contract data below.
+Use ONLY the contractual evidence and structured metrics provided below.
+Apply multi-clause reasoning: if one clause references another, combine them into a complete answer.
+Distinguish what is explicitly stated from what is missing or ambiguous.
+Do not append operational metrics (OTD, defect rates) unless the question asks about performance.
+Answer naturally: for simple questions use 1-3 sentences; for complex questions start with the conclusion then explain.
 
 === STRUCTURED METRICS FROM DATABASE ===
 {json.dumps(structured, indent=2)}
@@ -171,28 +225,22 @@ async def synthesis_node(state: AgentState) -> AgentState:
 
 USER QUESTION: {query}
 
-INSTRUCTIONS FOR RESPONSE FORMAT:
-1. "answer": Provide a direct, factual answer citing specific sources using [Source: "document_name", Page X, Section "section_title"] format. If the information is not in the evidence, say so explicitly.
-2. "keyFindings": 2-4 bullet points, each with a source citation. Only include facts present in the evidence.
-3. "suggestedActions": 2-3 actionable steps grounded in the contract terms provided.
-4. "sources": List the exact document sources referenced in your answer.
-
-Return ONLY a valid JSON object matching this schema:
+Respond with a JSON object:
 {{
-  "answer": "string (with [Source: ...] citations inline)",
-  "keyFindings": ["string (with source citation)"],
-  "suggestedActions": ["string"],
+  "answer": "Direct, natural answer with inline [Source: \"document\", Page X, Section \"heading\"] citations. For simple questions, 1-3 sentences. For complex questions, conclusion first, then supporting detail.",
+  "keyFindings": ["Concrete finding with exact terms/numbers and [Source: ...] citation"],
+  "suggestedActions": ["Actionable step grounded in the contract terms found"],
   "sources": [
     {{"document": "string", "page": number, "section": "string"}}
   ]
 }}"""
                 response = await client.chat.completions.create(
                     messages=[
-                        {"role": "system", "content": "You are a contract analysis assistant. You MUST ONLY answer based on the provided contract evidence. NEVER make up information. If data is not in the evidence, say 'This information is not available in the provided contract documents.'"},
+                        {"role": "system", "content": UNIVERSAL_SYSTEM_PROMPT},
                         {"role": "user", "content": prompt}
                     ],
                     model=settings.LLM_MODEL_NAME,
-                    temperature=0.0,
+                    temperature=0.1,
                     response_format={"type": "json_object"},
                 )
                 parsed = json.loads(response.choices[0].message.content)
@@ -218,14 +266,12 @@ Return ONLY a valid JSON object matching this schema:
                 )
             evidence_block = "\n\n".join(evidence_with_sources) if evidence_with_sources else "NO CONTRACT EVIDENCE AVAILABLE."
 
-            prompt = f"""You are a Procurement Intelligence Analyst. Analyze the supplier data below.
+            prompt = f"""Perform a comprehensive supplier assessment using the contractual evidence and structured metrics below.
 
-=== STRICT GROUNDING RULES (MANDATORY) ===
-1. You MUST ONLY use information explicitly present in the CONTRACTUAL EVIDENCE or STRUCTURED METRICS below.
-2. You MUST NOT invent, assume, or hallucinate any facts, numbers, clauses, percentages, dates, or terms not in the provided data.
-3. Every contractual claim MUST cite the source: [Source: "document_name", Page X, Section "section_title"].
-4. If data for a specific finding is not available, omit that finding rather than fabricating it.
-5. Performance metrics MUST only reference actual values from the STRUCTURED METRICS section.
+Apply multi-clause reasoning: combine cross-referenced clauses, definitions, exhibits, and amendments into complete findings.
+Correlate actual performance metrics against contractual thresholds to determine compliance status.
+Distinguish what is explicitly stated from what is missing or ambiguous. Omit findings when data is genuinely absent.
+For contractual claims, cite sources. For performance claims, reference actual metric values.
 
 === STRUCTURED METRICS FROM DATABASE ===
 {json.dumps(structured, indent=2)}
@@ -236,11 +282,11 @@ Return ONLY a valid JSON object matching this schema:
 TASK TYPE: {task}
 USER QUERY: {query}
 
-Return ONLY a valid JSON object matching this schema:
+Respond with a JSON object:
 {{
-  "summary": "2-3 sentence synthesis citing sources. Only reference facts from the evidence above.",
+  "summary": "2-3 sentence synthesis connecting contractual terms with actual performance. Cite sources inline.",
   "contractFindings": [
-    {{"title": "string", "description": "string (with [Source: ...] citation)", "status": "compliant|warning|breach"}}
+    {{"title": "string", "description": "string (with [Source: ...] citation, synthesizing related clauses)", "status": "compliant|warning|breach"}}
   ],
   "performanceFindings": [
     {{"metric": "string", "actual": "string", "target": "string", "status": "on_target|below_target|critical"}}
@@ -256,11 +302,11 @@ Return ONLY a valid JSON object matching this schema:
 }}"""
             response = await client.chat.completions.create(
                 messages=[
-                    {"role": "system", "content": "You are a contract analysis assistant. You MUST ONLY reference facts from the provided contract evidence and structured metrics. NEVER fabricate data. Cite sources for every claim."},
+                    {"role": "system", "content": UNIVERSAL_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
                 ],
                 model=settings.LLM_MODEL_NAME,
-                temperature=0.0,
+                temperature=0.1,
                 response_format={"type": "json_object"},
             )
             parsed = json.loads(response.choices[0].message.content)
