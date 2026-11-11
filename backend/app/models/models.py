@@ -3,7 +3,9 @@ SQLAlchemy ORM models for the Supplier 360 database.
 
 All tables follow normalized relational design with proper constraints,
 indexes, foreign keys, and timestamps. Supports both string IDs (e.g., 'SUP-001')
-and standard UUID strings for seamless frontend compatibility.
+and standard UUID strings for seamless frontend 
+
+compatibility.
 """
 
 import uuid
@@ -209,7 +211,7 @@ class ContractProduct(Base):
 
 
 # ──────────────────────────────────────────────────────────────
-# F. purchase_orders
+#. purchase_orders
 # ──────────────────────────────────────────────────────────────
 class PurchaseOrder(Base):
     __tablename__ = "purchase_orders"
@@ -348,6 +350,12 @@ class MarketPriceBenchmark(Base):
     benchmark_date: Mapped[date] = mapped_column(Date, nullable=False)
     source_name: Mapped[str] = mapped_column(String(255), nullable=False)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    benchmark_type: Mapped[str] = mapped_column(String(50), nullable=False, default="supplier_quotation")
+    retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    match_confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    verification_status: Mapped[str] = mapped_column(String(30), nullable=False, default="unverified")
+    metal_symbol: Mapped[str | None] = mapped_column(String(20), nullable=True)
     is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     product: Mapped["Product"] = relationship(lazy="selectin")

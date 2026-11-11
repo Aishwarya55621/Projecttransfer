@@ -379,7 +379,12 @@ Respond with a JSON object:
 
         if is_pricing:
             price_details = ", ".join(
-                f"{p.get('product_name')}: ${p.get('contracted_price', 0):.2f} (Benchmark: ${p.get('market_benchmark_price', 0):.2f})"
+                (
+                    f"{p.get('product_name')}: {p.get('currency') or ''} {p.get('contracted_price', 0):.2f} "
+                    f"(Benchmark: {p.get('currency') or ''} {p.get('market_benchmark_price'):.2f})"
+                    if p.get("market_benchmark_price") is not None else
+                    f"{p.get('product_name')}: {p.get('currency') or ''} {p.get('contracted_price', 0):.2f} (Benchmark unavailable)"
+                )
                 for p in pricing_list[:3]
             ) or "contracted unit pricing"
             ans_parts.append(
@@ -467,13 +472,15 @@ Respond with a JSON object:
     # Pricing findings
     pricing_findings = []
     for p in pricing_list:
-        diff = p.get("price_variance_pct", 0.0)
+        diff = p.get("price_variance_pct")
+        currency = p.get("currency") or ""
+        market = p.get("market_benchmark_price")
         pricing_findings.append({
             "item": p.get("product_name", "Supplied Item"),
-            "contractPrice": f"${p.get('contracted_price', 0):.2f}",
-            "marketBenchmark": f"${p.get('market_benchmark_price', 0):.2f}",
-            "variance": f"{'+' if diff > 0 else ''}{diff}%",
-            "status": "above_market" if diff > 2.0 else "competitive",
+            "contractPrice": f"{currency} {p.get('contracted_price', 0):.2f}",
+            "marketBenchmark": f"{currency} {market:.2f}" if market is not None else "Unavailable",
+            "variance": f"{'+' if diff is not None and diff > 0 else ''}{diff}%" if diff is not None else "Unavailable",
+            "status": "above_market" if diff is not None and diff > 2.0 else "competitive" if diff is not None else p.get("benchmark_status", "benchmark_unavailable"),
         })
 
     # Summary

@@ -11,14 +11,35 @@ Verification script testing the full backend stack:
 """
 
 import asyncio
+import sys
+from types import ModuleType
 from httpx import AsyncClient, ASGITransport
+
+# Keep integration tests offline and fast. The vector store already supports
+# this deterministic fallback when its optional embedding model is unavailable.
+_offline_embeddings = ModuleType("sentence_transformers")
+
+
+class _UnavailableSentenceTransformer:
+    def __init__(self, *_args, **_kwargs):
+        raise RuntimeError("Embedding model disabled in offline integration tests.")
+
+
+_offline_embeddings.SentenceTransformer = _UnavailableSentenceTransformer
+sys.modules["sentence_transformers"] = _offline_embeddings
+_offline_fastembed = ModuleType("fastembed")
+_offline_fastembed.TextEmbedding = _UnavailableSentenceTransformer
+sys.modules["fastembed"] = _offline_fastembed
+
 from app.main import app
 
 
 @pytest.mark.asyncio
 async def test_api():
     print("[TEST] Initializing test client...")
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", timeout=30.0) as client:
+    async with app.router.lifespan_context(app), AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", timeout=30.0
+    ) as client:
         # 1. Health check
         h = await client.get("/health")
         print(f"[TEST 1] Health check: status={h.status_code}, data={h.json()}")
@@ -71,10 +92,39 @@ async def test_api():
         # 7. Dashboard Metrics
         dash = await client.get("/api/dashboard/metrics")
         print(f"[TEST 7] Dashboard metrics: Active Suppliers={dash.json().get('data', {}).get('activeSuppliers')}")
-
         print("\n==============================================")
         print("ALL 7 SYSTEM INTEGRATION TESTS PASSED (100% SUCCESS)!")
         print("==============================================")
+
+    # Close the SQLite async worker threads created by the isolated test DB.
+    import app.core.database as database
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_contract_ingestion_without_metalcharts_key():
+    from app.core.config import settings
+    import app.core.database as database
+
+    original_key = settings.METALCHARTS_API_KEY
+    settings.METALCHARTS_API_KEY = ""
+    try:
+        async with app.router.lifespan_context(app), AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test", timeout=30.0
+        ) as client:
+            response = await client.post(
+                "/api/documents/upload",
+                data={"supplier_id": "SUP-001"},
+                files={"file": (
+                    "offline-test-contract.txt",
+                    b"Net 30 days. 30 days warranty. Delivery period 14 days.",
+                    "text/plain",
+                )},
+            )
+            assert response.json().get("status") == "success", response.json().get("message")
+    finally:
+        settings.METALCHARTS_API_KEY = original_key
+        await database.engine.dispose()
 
 
 if __name__ == "__main__":

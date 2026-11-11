@@ -365,6 +365,7 @@ MARKET_BENCHMARKS = [
         "benchmark_date": date(2026, 9, 1),
         "source_name": "Global Industrial Machinery Price Index (GIMPI)",
         "source_url": "https://indices.industrialprocure.com/motors-q3-2026",
+        "is_demo": True,
     },
     {
         "product_id": "PRD-002",
@@ -375,6 +376,7 @@ MARKET_BENCHMARKS = [
         "benchmark_date": date(2026, 9, 15),
         "source_name": "Precision Bearings Market Quarterly",
         "source_url": "https://bearingbenchmark.org/q3-apac",
+        "is_demo": True,
     },
     {
         "product_id": "PRD-003",
@@ -385,6 +387,7 @@ MARKET_BENCHMARKS = [
         "benchmark_date": date(2026, 9, 10),
         "source_name": "National Precision Machining Consortium",
         "source_url": "https://npmc-india.org/benchmarks/machined-alum",
+        "is_demo": True,
     },
 ]
 

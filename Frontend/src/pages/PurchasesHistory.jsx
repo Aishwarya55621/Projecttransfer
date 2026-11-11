@@ -6,12 +6,16 @@ import {
 import { Search, Filter, IndianRupee } from 'lucide-react';
 import { StatusBadge } from '../components/ui';
 import { getPurchasesBySupplier, getPurchaseSummaryBySupplier } from '../services';
+import { getLatestMarketPrices, refreshRawMaterialPrices } from '../services/api/purchases';
 
 export default function PurchasesHistory() {
   const { supplier } = useOutletContext();
   const [purchases, setPurchases] = useState([]);
   const [summaries, setSummaries] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [benchmarks, setBenchmarks] = useState([]);
+  const [refreshingPrices, setRefreshingPrices] = useState(false);
+  const [priceMessage, setPriceMessage] = useState('');
 
   useEffect(() => {
     async function loadData() {
@@ -21,9 +25,11 @@ export default function PurchasesHistory() {
           getPurchasesBySupplier(supplier.id),
           getPurchaseSummaryBySupplier(supplier.id)
         ]);
+        const benchmarkRes = await getLatestMarketPrices();
         
         if (purchRes.status === 'success') setPurchases(purchRes.data);
         if (summRes.status === 'success') setSummaries(summRes.data);
+        if (benchmarkRes.status === 'success' && Array.isArray(benchmarkRes.data)) setBenchmarks(benchmarkRes.data);
       } catch (error) {
         console.error("Failed to load purchases:", error);
       } finally {
@@ -33,6 +39,23 @@ export default function PurchasesHistory() {
     
     loadData();
   }, [supplier.id]);
+
+  async function handleRefreshPrices() {
+    setRefreshingPrices(true);
+    setPriceMessage('');
+    try {
+      const result = await refreshRawMaterialPrices();
+      setPriceMessage(result.message || (result.status === 'success' ? 'Raw material prices refreshed.' : 'Price refresh failed.'));
+      if (result.status === 'success') {
+        const latest = await getLatestMarketPrices();
+        if (latest.status === 'success') setBenchmarks(latest.data || []);
+      }
+    } catch {
+      setPriceMessage('Price refresh failed.');
+    } finally {
+      setRefreshingPrices(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -44,6 +67,37 @@ export default function PurchasesHistory() {
 
   return (
     <div className="animate-fade-in">
+      <div className="card mb-8">
+        <div className="card-header flex justify-between items-center">
+          <div>
+            <h2 className="card-title">Material Price Benchmarks</h2>
+            <p className="text-sm text-gray-500">Indicative commodity references; supplier quotations and landed costs may differ.</p>
+          </div>
+          <button className="btn btn-secondary btn-sm" onClick={handleRefreshPrices} disabled={refreshingPrices}>
+            {refreshingPrices ? 'Refreshing…' : 'Refresh copper & aluminium'}
+          </button>
+        </div>
+        <div className="card-body">
+          {priceMessage && <p className="text-sm mb-3" role="status">{priceMessage}</p>}
+          {benchmarks.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="data-table">
+                <thead><tr><th>Material</th><th>Price</th><th>Source</th><th>Last updated</th><th>Type</th></tr></thead>
+                <tbody>{benchmarks.map((item) => (
+                  <tr key={item.benchmark_id}>
+                    <td>{item.product_name}</td>
+                    <td>{item.currency} {Number(item.price).toLocaleString()} / {item.unit}</td>
+                    <td>{item.source}</td>
+                    <td>{item.retrieved_at ? new Date(item.retrieved_at).toLocaleString() : item.date}</td>
+                    <td>{item.type?.replaceAll('_', ' ')}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          ) : <p className="text-sm text-gray-500">No stored benchmarks yet.</p>}
+          <a className="text-xs text-gray-500 underline" href="https://metalcharts.org" target="_blank" rel="noreferrer">Metal prices by MetalCharts</a>
+        </div>
+      </div>
       {summaries.length > 0 && (
         <div className="card mb-8">
           <div className="card-header">

@@ -7,6 +7,9 @@ from pydantic import Field
 from typing import List
 import json
 import urllib.parse
+from pathlib import Path
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -30,6 +33,7 @@ class Settings(BaseSettings):
 
     # --- LLM ---
     GROQ_API_KEY: str = ""
+    METALCHARTS_API_KEY: str = ""
     LLM_MODEL_NAME: str = "qwen/qwen3.8-27b"
     LLM_TEMPERATURE: float = 0.1
 
@@ -95,7 +99,7 @@ class Settings(BaseSettings):
         return url
 
     model_config = {
-        "env_file": [".env", "../.env"],
+        "env_file": [str(BACKEND_DIR / ".env"), str(BACKEND_DIR.parent / ".env")],
         "env_file_encoding": "utf-8",
         "case_sensitive": True,
         "extra": "ignore",

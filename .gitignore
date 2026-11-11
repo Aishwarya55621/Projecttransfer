@@ -15,10 +15,13 @@ dist/
 dist-ssr/
 
 # Environment variables
-.env
+/.env
 .env.*
 !.env.example
-
+/.env.example
+/backend/.env.example
+/backend/.env
+/venv/
 # Local config
 *.local
 
@@ -35,3 +38,9 @@ dist-ssr/
 
 # OS files
 Thumbs.db
+
+venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+.env

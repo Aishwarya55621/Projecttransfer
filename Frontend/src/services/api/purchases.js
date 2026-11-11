@@ -3,7 +3,7 @@
 // Connected to FastAPI: GET /api/purchases/suppliers/{id}/purchases
 // ============================================================
 
-import { apiGet, simulateDelay } from './client';
+import { apiGet, apiPost, simulateDelay } from './client';
 import { mockPurchases, mockPurchaseSummaries } from '../../data/mockData';
 
 export async function getPurchasesBySupplier(supplierId, filters = {}) {
@@ -40,4 +40,12 @@ export async function getPurchaseSummaryBySupplier(supplierId) {
   await simulateDelay(200);
   const summary = mockPurchaseSummaries[supplierId] || [];
   return { status: 'success', data: summary };
+}
+
+export async function getLatestMarketPrices() {
+  return apiGet('/market-prices/latest');
+}
+
+export async function refreshRawMaterialPrices() {
+  return apiPost('/market-prices/refresh/raw-materials');
 }

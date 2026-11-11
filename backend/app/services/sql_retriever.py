@@ -254,28 +254,89 @@ class SQLRetriever:
         for cp, prod in rows:
             bench_stmt = (
                 select(MarketPriceBenchmark)
-                .where(MarketPriceBenchmark.product_id == prod.product_id)
-                .order_by(MarketPriceBenchmark.benchmark_date.desc())
+                .where(
+                    MarketPriceBenchmark.product_id == prod.product_id,
+                    MarketPriceBenchmark.is_demo.is_(False),
+                )
+                .order_by(MarketPriceBenchmark.benchmark_date.desc(), MarketPriceBenchmark.retrieved_at.desc())
             )
             bench = (await db.execute(bench_stmt)).scalars().first()
+            historical = None
+            if bench is None:
+                history_stmt = (
+                    select(PurchaseOrderItem, PurchaseOrder)
+                    .join(PurchaseOrder, PurchaseOrderItem.order_id == PurchaseOrder.order_id)
+                    .where(
+                        PurchaseOrderItem.product_id == prod.product_id,
+                        PurchaseOrder.is_demo.is_(False),
+                    )
+                    .order_by(PurchaseOrder.order_date.desc())
+                    .limit(1)
+                )
+                historical = (await db.execute(history_stmt)).first()
 
-            contracted = float(cp.contracted_unit_price) if cp.contracted_unit_price else 0.0
-            market = float(bench.benchmark_price) if bench else contracted * 0.95
-            diff_pct = round(((contracted - market) / market * 100), 2) if market > 0 else 0.0
+            contracted_decimal = Decimal(str(cp.contracted_unit_price or 0))
+            contracted = float(contracted_decimal)
+            historical_item, historical_order = historical if historical else (None, None)
+            historical_compatible = bool(
+                historical_item and prod.package_unit
+                and (cp.currency or prod.currency or "USD").upper() == (historical_order.currency or "USD").upper()
+            )
+            commodity_matches = bool(
+                bench and bench.benchmark_type == "commodity_reference"
+                and bench.metal_symbol and bench.metal_symbol.casefold() in prod.product_name.casefold()
+            )
+            compatible = bool(
+                bench
+                and bench.verification_status == "verified"
+                and (cp.currency or prod.currency or "USD").upper() == bench.currency.upper()
+                and bench.unit and prod.package_unit and bench.unit.lower() == prod.package_unit.lower()
+                and (commodity_matches or (
+                    bench.product_specification and prod.description
+                    and bench.product_specification.strip().casefold() == prod.description.strip().casefold()
+                ))
+            )
+            if not bench and historical_compatible:
+                market_decimal = Decimal(str(historical_item.unit_price))
+            else:
+                market_decimal = Decimal(str(bench.benchmark_price)) if compatible else None
+            diff_pct = (
+                float(((contracted_decimal - market_decimal) / market_decimal * Decimal("100")).quantize(Decimal("0.01")))
+                if market_decimal and market_decimal > 0 and contracted_decimal > 0 else None
+            )
+            benchmark_date = bench.benchmark_date if bench else historical_order.order_date if historical_compatible else None
+            stale_after_days = 7 if bench else 90
+            stale = bool(benchmark_date and (date.today() - benchmark_date).days > stale_after_days)
+            if not bench:
+                status = ("benchmark_stale" if stale else "comparison_available") if historical_compatible else "benchmark_unavailable"
+            elif bench.verification_status != "verified":
+                status = "benchmark_unavailable"
+            elif not compatible:
+                status = "specification_mismatch"
+            else:
+                status = "benchmark_stale" if stale else "comparison_available"
 
             comparisons.append({
                 "product_id": prod.product_id,
                 "product_name": prod.product_name,
                 "category": prod.category,
                 "contracted_price": contracted,
-                "market_benchmark_price": market,
+                "market_benchmark_price": float(market_decimal) if market_decimal is not None else None,
                 "price_variance_pct": diff_pct,
-                "currency": cp.currency or "USD",
-                "benchmark_source": bench.source_name if bench else "Market Average",
+                "currency": cp.currency or prod.currency or (bench.currency if bench else None),
+                "benchmark_source": bench.source_name if bench else "Historical purchase order" if historical_compatible else None,
+                "benchmark_type": bench.benchmark_type if bench else "historical_purchase" if historical_compatible else None,
+                "benchmark_currency": bench.currency if bench else historical_order.currency if historical_compatible else None,
+                "benchmark_unit": bench.unit if bench else prod.package_unit if historical_compatible else None,
+                "benchmark_date": benchmark_date.isoformat() if benchmark_date else None,
+                "benchmark_retrieved_at": bench.retrieved_at.isoformat() if bench and bench.retrieved_at else None,
+                "benchmark_status": status,
                 "recommendation": (
                     f"Contracted price is {abs(diff_pct)}% above benchmark. Negotiate downward."
-                    if diff_pct > 3.0
-                    else "Contracted price is competitive with current market rates."
+                    if diff_pct is not None and diff_pct > 3.0 else
+                    "Contracted price is competitive with current market rates."
+                    if status == "comparison_available" and diff_pct is not None else
+                    f"Price comparison unavailable: {status.replace('_', ' ')}."
                 ),
             })
 

@@ -13,6 +13,7 @@ from app.api.v1.endpoints import (
     analysis,
     dashboard,
     reports,
+    market_prices,
 )
 
 api_router = APIRouter()
@@ -25,3 +26,4 @@ api_router.include_router(documents.router, prefix="/documents", tags=["Document
 api_router.include_router(analysis.router, prefix="/analysis", tags=["AI Analysis & Assistant"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
 api_router.include_router(reports.router, prefix="/reports", tags=["Reports"])
+api_router.include_router(market_prices.router, prefix="/market-prices", tags=["Market Prices"])
