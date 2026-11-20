@@ -22,3 +22,6 @@ class AgentState(TypedDict, total=False):
     sources: List[Dict[str, Any]]  # Source citations: [{document, page, section}]
     status: str
     error: Optional[str]
+    generation_mode: Optional[str]
+    llm_calls: int
+    trace_id: Optional[str]

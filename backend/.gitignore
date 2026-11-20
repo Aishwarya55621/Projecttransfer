@@ -62,3 +62,6 @@ dist/
 *.swo
 .DS_Store
 Thumbs.db
+
+# Runtime evaluation artifacts and local logs
+/runtime/

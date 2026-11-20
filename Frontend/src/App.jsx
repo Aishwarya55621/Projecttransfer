@@ -17,6 +17,7 @@ import PerformanceAnalysis from './pages/PerformanceAnalysis';
 import PurchasesHistory from './pages/PurchasesHistory';
 import AIAnalysis from './pages/AIAnalysis';
 import Reports from './pages/Reports';
+import AiQuality from './pages/AiQuality';
 
 function App() {
   return (
@@ -27,6 +28,7 @@ function App() {
           <Route path="suppliers" element={<SuppliersList />} />
           <Route path="comparison" element={<SupplierComparison />} />
           <Route path="documents" element={<Documents />} />
+          <Route path="ai-quality" element={<AiQuality />} />
           
           <Route path="suppliers/:id" element={<Supplier360Layout />}>
             <Route index element={<Navigate to="overview" replace />} />

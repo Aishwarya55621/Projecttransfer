@@ -8,6 +8,7 @@ import re
 from typing import List, Dict, Any, Optional
 
 from app.services.vector_store import vector_store
+from app.services.telemetry import observation
 
 
 class SimpleBM25:
@@ -117,20 +118,34 @@ class HybridRetriever:
         self._refresh_bm25()
 
         # 1. Dense retrieval
-        dense_results = vector_store.search(
-            query=query,
-            supplier_id=supplier_id,
-            clause_type=clause_type,
-            limit=top_k * 2,
-        )
+        dense_backend = "qdrant" if vector_store.client is not None else "in_memory"
+        with observation(
+            "retrieval.dense_vector_search",
+            metadata={"backend": dense_backend, "limit": top_k * 2},
+        ) as span:
+            dense_results = vector_store.search(
+                query=query,
+                supplier_id=supplier_id,
+                clause_type=clause_type,
+                limit=top_k * 2,
+            )
+            span.update(metadata={
+                "result_count": len(dense_results),
+                "chunk_ids": [item.get("chunk_id") for item in dense_results if item.get("chunk_id")],
+            })
 
         # 2. Sparse BM25 retrieval with pre-filtering
-        sparse_results = self.bm25.search(
-            query=query,
-            supplier_id=supplier_id,
-            clause_type=clause_type,
-            limit=top_k * 2,
-        )
+        with observation("retrieval.bm25_search", metadata={"limit": top_k * 2}) as span:
+            sparse_results = self.bm25.search(
+                query=query,
+                supplier_id=supplier_id,
+                clause_type=clause_type,
+                limit=top_k * 2,
+            )
+            span.update(metadata={
+                "result_count": len(sparse_results),
+                "chunk_ids": [item.get("chunk_id") for item in sparse_results if item.get("chunk_id")],
+            })
 
         # 3. Reciprocal Rank Fusion (RRF)
         rrf_scores: Dict[str, float] = {}

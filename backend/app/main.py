@@ -5,8 +5,10 @@ Supplier 360 — FastAPI Main Application Entrypoint.
 from contextlib import asynccontextmanager
 from datetime import datetime
 import os
+import re
+import uuid
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -14,6 +16,7 @@ from app.core.config import settings
 from app.core.database import async_session_factory, ensure_active_engine
 from app.db.seed import init_tables, seed_database
 from app.services.vector_store import vector_store
+from app.services.telemetry import request_scope, shutdown_telemetry
 from app.api.v1.api import api_router
 
 
@@ -38,7 +41,10 @@ async def lifespan(app: FastAPI):
     # 3. Ensure Upload directory
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
-    yield
+    try:
+        yield
+    finally:
+        shutdown_telemetry()
 
 
 app = FastAPI(
@@ -55,7 +61,19 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID", "X-Trace-ID"],
 )
+
+
+@app.middleware("http")
+async def attach_request_id(request: Request, call_next):
+    """Attach a safe correlation ID to every response."""
+    supplied_id = request.headers.get("X-Request-ID", "")
+    request_id = supplied_id if re.fullmatch(r"[A-Za-z0-9_-]{16,64}", supplied_id) else uuid.uuid4().hex
+    with request_scope(request_id):
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
 
 # Mount API routes
 app.include_router(api_router, prefix="/api")

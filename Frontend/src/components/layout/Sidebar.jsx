@@ -17,6 +17,7 @@ const navItems = [
   { to: '/suppliers', icon: Users, label: 'Suppliers' },
   { to: '/comparison', icon: GitCompare, label: 'Supplier Comparison' },
   { to: '/documents', icon: Upload, label: 'Documents' },
+  { to: '/ai-quality', icon: Brain, label: 'AI Quality & Evals' },
 ];
 
 export default function Sidebar() {

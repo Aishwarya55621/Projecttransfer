@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     LLM_MODEL_NAME: str = "qwen/qwen3.8-27b"
     LLM_TEMPERATURE: float = 0.1
 
+    # --- Optional Langfuse telemetry ---
+    LANGFUSE_PUBLIC_KEY: str = ""
+    LANGFUSE_SECRET_KEY: str = ""
+    LANGFUSE_BASE_URL: str = ""
+    LANGFUSE_CAPTURE_CONTENT: bool = False
+
     # --- Embeddings ---
     EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
     EMBEDDING_DIMENSION: int = 384
@@ -62,6 +68,18 @@ class Settings(BaseSettings):
     @property
     def max_upload_bytes(self) -> int:
         return self.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+
+    @property
+    def langfuse_enabled(self) -> bool:
+        public_key = self.LANGFUSE_PUBLIC_KEY.strip()
+        secret_key = self.LANGFUSE_SECRET_KEY.strip()
+        return bool(
+            public_key
+            and secret_key
+            and not any(char.isspace() for char in public_key + secret_key)
+            and public_key.casefold() not in {"put api key here", "placeholder"}
+            and secret_key.casefold() not in {"put api key here", "placeholder"}
+        )
 
     @property
     def async_database_url(self) -> str:

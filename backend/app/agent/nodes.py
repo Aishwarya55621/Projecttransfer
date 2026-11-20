@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.agent.state import AgentState
 from app.services.sql_retriever import sql_retriever
 from app.services.hybrid_retriever import hybrid_retriever
+from app.services.telemetry import observation, usage_details
 
 logger = logging.getLogger("agent_nodes")
 
@@ -100,18 +101,26 @@ async def structured_retriever_node(state: AgentState, db: AsyncSession) -> Agen
     supplier_id = state["supplier_id"]
     structured_data: Dict[str, Any] = {}
 
-    summary = await sql_retriever.get_supplier_summary(db, supplier_id)
+    with observation("retrieval.sql.supplier_summary") as span:
+        summary = await sql_retriever.get_supplier_summary(db, supplier_id)
+        span.update(metadata={"result_count": int(summary is not None)})
     if summary:
         structured_data["supplier"] = summary
 
-    contract = await sql_retriever.get_contract_details(db, supplier_id)
+    with observation("retrieval.sql.contract_details") as span:
+        contract = await sql_retriever.get_contract_details(db, supplier_id)
+        span.update(metadata={"result_count": int(contract is not None)})
     if contract:
         structured_data["contract"] = contract
 
-    kpis = await sql_retriever.get_performance_kpis(db, supplier_id)
+    with observation("retrieval.sql.performance_kpis") as span:
+        kpis = await sql_retriever.get_performance_kpis(db, supplier_id)
+        span.update(metadata={"metric_count": len(kpis)})
     structured_data["performance_kpis"] = kpis
 
-    pricing = await sql_retriever.get_price_comparison(db, supplier_id)
+    with observation("retrieval.sql.price_comparison") as span:
+        pricing = await sql_retriever.get_price_comparison(db, supplier_id)
+        span.update(metadata={"result_count": len(pricing)})
     structured_data["pricing_comparison"] = pricing
 
     state["structured_data"] = structured_data
@@ -154,21 +163,32 @@ def clause_retriever_node(state: AgentState) -> AgentState:
             clause_type = "governing_law"
         search_query = query
 
-    evidence = hybrid_retriever.retrieve(
-        query=search_query,
-        supplier_id=supplier_id,
-        clause_type=clause_type,
-        top_k=6,
-    )
+    with observation("retrieval.hybrid.primary", metadata={"top_k": 6, "clause_filter": bool(clause_type)}) as span:
+        evidence = hybrid_retriever.retrieve(
+            query=search_query,
+            supplier_id=supplier_id,
+            clause_type=clause_type,
+            top_k=6,
+        )
+        span.update(metadata={
+            "result_count": len(evidence),
+            "chunk_ids": [item.get("chunk_id") for item in evidence if item.get("chunk_id")],
+            "document_ids": [item.get("documentId") for item in evidence if item.get("documentId")],
+        })
 
     # If clause-type filtered search returned no chunks, retrieve general chunks for this supplier
     if not evidence or len(evidence) < 2:
-        general_evidence = hybrid_retriever.retrieve(
-            query=search_query or "contract obligations terms delivery payment warranty",
-            supplier_id=supplier_id,
-            clause_type=None,
-            top_k=6,
-        )
+        with observation("retrieval.hybrid.fallback", metadata={"top_k": 6}) as span:
+            general_evidence = hybrid_retriever.retrieve(
+                query=search_query or "contract obligations terms delivery payment warranty",
+                supplier_id=supplier_id,
+                clause_type=None,
+                top_k=6,
+            )
+            span.update(metadata={
+                "result_count": len(general_evidence),
+                "chunk_ids": [item.get("chunk_id") for item in general_evidence if item.get("chunk_id")],
+            })
         if general_evidence:
             existing_cids = {e["chunk_id"] for e in evidence}
             for ge in general_evidence:
@@ -190,12 +210,39 @@ async def synthesis_node(state: AgentState) -> AgentState:
     structured = state.get("structured_data", {})
     evidence = state.get("contract_evidence", [])
     sup_name = structured.get("supplier", {}).get("supplier_name", "Supplier")
+    state["generation_mode"] = "deterministic_fallback"
+    state["llm_calls"] = 0
 
     # Check if Groq LLM is available
     if settings.GROQ_API_KEY:
         try:
             from groq import AsyncGroq
             client = AsyncGroq(api_key=settings.GROQ_API_KEY)
+
+            async def generate_json(prompt: str) -> dict:
+                state["llm_calls"] = state.get("llm_calls", 0) + 1
+                with observation(
+                    "llm.groq_generation",
+                    as_type="generation",
+                    model=settings.LLM_MODEL_NAME,
+                    metadata={"provider": "groq"},
+                    content_input=query,
+                ) as generation:
+                    response = await client.chat.completions.create(
+                        messages=[
+                            {"role": "system", "content": UNIVERSAL_SYSTEM_PROMPT},
+                            {"role": "user", "content": prompt}
+                        ],
+                        model=settings.LLM_MODEL_NAME,
+                        temperature=0.1,
+                        response_format={"type": "json_object"},
+                    )
+                    content = response.choices[0].message.content
+                    generation.update(
+                        content_output=content or "",
+                        usage_details=usage_details(response),
+                    )
+                return json.loads(content)
 
             if task == "general_assistant":
                 # Build a formatted evidence block with explicit source labels
@@ -234,16 +281,8 @@ Respond with a JSON object:
     {{"document": "string", "page": number, "section": "string"}}
   ]
 }}"""
-                response = await client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": UNIVERSAL_SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt}
-                    ],
-                    model=settings.LLM_MODEL_NAME,
-                    temperature=0.1,
-                    response_format={"type": "json_object"},
-                )
-                parsed = json.loads(response.choices[0].message.content)
+                parsed = await generate_json(prompt)
+                state["generation_mode"] = "groq"
                 state["analysis_summary"] = parsed.get("answer", parsed.get("summary", ""))
                 state["key_findings"] = parsed.get("keyFindings", [])
                 state["suggested_actions"] = parsed.get("suggestedActions", [])
@@ -300,16 +339,8 @@ Respond with a JSON object:
     {{"document": "string", "page": number, "section": "string"}}
   ]
 }}"""
-            response = await client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": UNIVERSAL_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
-                ],
-                model=settings.LLM_MODEL_NAME,
-                temperature=0.1,
-                response_format={"type": "json_object"},
-            )
-            parsed = json.loads(response.choices[0].message.content)
+            parsed = await generate_json(prompt)
+            state["generation_mode"] = "groq"
             state["analysis_summary"] = parsed.get("summary", "")
             state["contract_findings"] = parsed.get("contractFindings", [])
             state["performance_findings"] = parsed.get("performanceFindings", [])
@@ -320,7 +351,7 @@ Respond with a JSON object:
             state["key_findings"] = [f.get("title", "") for f in parsed.get("contractFindings", [])]
             return state
         except Exception as e:
-            logger.warning(f"Groq synthesis failed ({e}). Proceeding with expert deterministic synthesis.")
+            logger.warning("Groq synthesis failed (%s). Proceeding with deterministic synthesis.", type(e).__name__)
 
     # High-quality deterministic synthesis correlating SQL metrics with Qdrant clauses
     kpis = structured.get("performance_kpis", {})

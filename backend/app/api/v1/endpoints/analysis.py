@@ -7,12 +7,13 @@ structured PostgreSQL data with hybrid Qdrant contract evidence.
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, Body
+from fastapi import APIRouter, Depends, Body, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.schemas.schemas import APIResponse
 from app.agent.graph import procurement_workflow
+from app.services.telemetry import current_request_id
 
 router = APIRouter()
 
@@ -34,6 +35,7 @@ class AssistantMessageRequest(BaseModel):
 @router.post("/{analysis_type}", response_model=APIResponse)
 async def run_supplier_analysis(
     req: AnalysisRequest,
+    response: Response,
     analysis_type: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -62,12 +64,16 @@ async def run_supplier_analysis(
         "evidence": result.get("contract_evidence", []),
         "generatedAt": datetime.now().isoformat(),
     }
-    return APIResponse(status="success", data=data)
+    trace_id = result.get("trace_id")
+    if trace_id:
+        response.headers["X-Trace-ID"] = trace_id
+    return APIResponse(status="success", data=data, request_id=current_request_id(), trace_id=trace_id)
 
 
 @router.post("/assistant/query", response_model=APIResponse)
 async def query_supplier_assistant(
     req: AssistantMessageRequest,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -92,4 +98,7 @@ async def query_supplier_assistant(
         "suggestedActions": result.get("suggested_actions", []),
         "timestamp": datetime.now().isoformat(),
     }
-    return APIResponse(status="success", data=data)
+    trace_id = result.get("trace_id")
+    if trace_id:
+        response.headers["X-Trace-ID"] = trace_id
+    return APIResponse(status="success", data=data, request_id=current_request_id(), trace_id=trace_id)
